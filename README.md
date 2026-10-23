@@ -14,7 +14,11 @@ Erstellung rechtssicherer Nebenkostenabrechnungen als PDF (DIN A4, Druckansicht)
 
    pip install -r requirements.txt
 
-## Programm als EXE-Datei erzeugen (einmalig)
+## Ausführbares Programm 
+
+Die Versionen als ausführbares Programm findest du unter Releases. Diese werden erzeugt, wenn ein neuer Git-Tag erstellt wird. Manuell kann man dieses Executable erzeugen wie im nächsten Abschnitt beschrieben. 
+
+### EXE-Datei erzeugen
 
 Im selben Ordner ausführen:
 
