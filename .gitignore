@@ -1,2 +1,7 @@
 data/*.db
 abrechnungen/*.pdf
+
+# Build output
+dist/
+build/
+*.spec
