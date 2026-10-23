@@ -16,7 +16,7 @@ import os
 import sys
 import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -133,6 +133,38 @@ class App(tk.Tk):
         self._build_ui()
         self.refresh_immobilien()
 
+    def ask_string(self, title, prompt, initialvalue=""):
+        """Show a simple text prompt without macOS-specific Tk commands."""
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.resizable(False, False)
+
+        ttk.Label(win, text=prompt).grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
+        entry = ttk.Entry(win, width=40)
+        entry.insert(0, "" if initialvalue is None else str(initialvalue))
+        entry.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        result = {"value": None}
+
+        def submit():
+            result["value"] = entry.get()
+            win.destroy()
+
+        def cancel():
+            win.destroy()
+
+        buttons = ttk.Frame(win)
+        buttons.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="e")
+        ttk.Button(buttons, text="Abbrechen", command=cancel).pack(side="right")
+        ttk.Button(buttons, text="OK", command=submit).pack(side="right", padx=(0, 6))
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        win.bind("<Return>", lambda _event: submit())
+        win.bind("<Escape>", lambda _event: cancel())
+        entry.focus_set()
+        win.grab_set()
+        self.wait_window(win)
+        return result["value"]
+
     # -------------------- UI Aufbau --------------------
     def _build_ui(self):
         main = ttk.Frame(self)
@@ -182,10 +214,10 @@ class App(tk.Tk):
         return int(sel[0])
 
     def add_immobilie(self):
-        name = simpledialog.askstring("Neue Immobilie", "Name der Immobilie:")
+        name = self.ask_string("Neue Immobilie", "Name der Immobilie:")
         if not name:
             return
-        adresse = simpledialog.askstring("Neue Immobilie", "Adresse:")
+        adresse = self.ask_string("Neue Immobilie", "Adresse:")
         conn = get_conn()
         conn.execute("INSERT INTO immobilien (name, adresse) VALUES (?, ?)", (name, adresse or ""))
         conn.commit()
@@ -199,15 +231,15 @@ class App(tk.Tk):
             return
         conn = get_conn()
         row = conn.execute("SELECT * FROM immobilien WHERE id=?", (iid,)).fetchone()
-        name = simpledialog.askstring("Immobilie bearbeiten", "Name:", initialvalue=row["name"])
+        name = self.ask_string("Immobilie bearbeiten", "Name:", initialvalue=row["name"])
         if name is None:
             conn.close()
             return
-        adresse = simpledialog.askstring("Immobilie bearbeiten", "Adresse:", initialvalue=row["adresse"])
-        flaeche = simpledialog.askstring("Immobilie bearbeiten", "Gesamtwohnfläche (m², optional):",
-                                          initialvalue=str(row["gesamtwohnflaeche"]))
-        einheiten = simpledialog.askstring("Immobilie bearbeiten", "Anzahl Wohneinheiten (optional):",
-                                            initialvalue=str(row["gesamteinheiten"]))
+        adresse = self.ask_string("Immobilie bearbeiten", "Adresse:", initialvalue=row["adresse"])
+        flaeche = self.ask_string("Immobilie bearbeiten", "Gesamtwohnfläche (m², optional):",
+                                  initialvalue=str(row["gesamtwohnflaeche"]))
+        einheiten = self.ask_string("Immobilie bearbeiten", "Anzahl Wohneinheiten (optional):",
+                                    initialvalue=str(row["gesamteinheiten"]))
         try:
             flaeche_v = float(flaeche) if flaeche else 0
         except ValueError:
@@ -523,14 +555,14 @@ class App(tk.Tk):
             messagebox.showinfo("Hinweis", "Bitte zuerst einen Zähler auswählen.")
             return
         zid = int(sel[0])
-        datum = simpledialog.askstring("Zählerstand", "Datum (JJJJ-MM-TT):",
-                                        initialvalue=datetime.date.today().isoformat())
+        datum = self.ask_string("Zählerstand", "Datum (JJJJ-MM-TT):",
+                                initialvalue=datetime.date.today().isoformat())
         if not datum:
             return
-        stand = simpledialog.askstring("Zählerstand", "Zählerstand:")
+        stand = self.ask_string("Zählerstand", "Zählerstand:")
         if stand is None:
             return
-        notiz = simpledialog.askstring("Zählerstand", "Notiz (optional):") or ""
+        notiz = self.ask_string("Zählerstand", "Notiz (optional):") or ""
         try:
             stand_v = float(stand.replace(",", "."))
         except ValueError:
