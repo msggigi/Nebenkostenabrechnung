@@ -55,7 +55,10 @@ Cloud-Speicher) ist die beste Absicherung für die nächsten Jahre.
    Name, Nummer) und einer Partei zuordnen (oder "Allgemein/Haus" für
    Gemeinschaftszähler). Zählerstände mit Datum erfassen.
 4. Tab "Kostenpositionen": Jahreskosten je Kostenart (nach BetrKV) eintragen
-   und Umlageschlüssel wählen (Wohnfläche, Personenzahl, Verbrauch, Einheiten).
+   und Umlageschlüssel wählen (Wohnfläche, Personenzahl, Verbrauch, Einheiten
+   oder Miteigentumsanteil). Für den individuellen Umlageschlüssel werden die
+   Anteile je Kostenposition und Partei als Prozentwert (z. B. `12,5 %`) oder
+   Verhältnis (z. B. `125/1000`) eingegeben; zusammen müssen sie 100 % ergeben.
 5. Tab "Abrechnung erstellen": Jahr wählen und mit einem Klick PDF für alle
    Parteien oder eine einzelne Partei erzeugen.
 

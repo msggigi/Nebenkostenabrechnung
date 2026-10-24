@@ -50,7 +50,10 @@ KOSTENARTEN_BETRKV = [
     "Wascheinrichtung", "Sonstige Betriebskosten"
 ]
 
-UMLAGESCHLUESSEL = ["Wohnfläche (m²)", "Personenzahl", "Verbrauch (Zähler)", "Wohneinheiten", "Individuell (%)"]
+UMLAGESCHLUESSEL = [
+    "Wohnfläche (m²)", "Personenzahl", "Verbrauch (Zähler)", "Wohneinheiten",
+    "Miteigentumsanteil", "Individuell (%, Verhältnis)"
+]
 
 ZAEHLERTYPEN = ["Strom", "Gas", "Wasser", "Öl"]
 EINHEITEN = {"Strom": "kWh", "Gas": "kWh / m³", "Wasser": "m³", "Öl": "Liter"}
@@ -64,6 +67,26 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def parse_anteil(value):
+    """Convert a percentage or ratio to a share between zero and one."""
+    value = value.strip().replace(" ", "").replace(",", ".")
+    if not value:
+        return 0.0
+    if "/" in value:
+        parts = value.split("/")
+        if len(parts) != 2:
+            raise ValueError("Das Verhältnis muss die Form Zähler/Nenner haben.")
+        zaehler, nenner = (float(part) for part in parts)
+        if nenner <= 0:
+            raise ValueError("Der Nenner muss größer als null sein.")
+        anteil = zaehler / nenner
+    else:
+        anteil = float(value.rstrip("%")) / 100
+    if not 0 <= anteil <= 1:
+        raise ValueError("Der Anteil muss zwischen 0 % und 100 % liegen.")
+    return anteil
 
 
 def init_db():
@@ -84,6 +107,7 @@ def init_db():
         einheit TEXT,
         wohnflaeche REAL DEFAULT 0,
         personenzahl INTEGER DEFAULT 1,
+        miteigentumsanteil REAL DEFAULT 0,
         einzug TEXT,
         auszug TEXT,
         vorauszahlung_monat REAL DEFAULT 0,
@@ -116,7 +140,18 @@ def init_db():
         umlageschluessel TEXT NOT NULL,
         FOREIGN KEY(immobilie_id) REFERENCES immobilien(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS kostenanteile (
+        kostenposition_id INTEGER NOT NULL,
+        partei_id INTEGER NOT NULL,
+        anteil REAL NOT NULL,
+        PRIMARY KEY (kostenposition_id, partei_id),
+        FOREIGN KEY(kostenposition_id) REFERENCES kostenpositionen(id) ON DELETE CASCADE,
+        FOREIGN KEY(partei_id) REFERENCES parteien(id) ON DELETE CASCADE
+    );
     """)
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(parteien)")}
+    if "miteigentumsanteil" not in columns:
+        c.execute("ALTER TABLE parteien ADD COLUMN miteigentumsanteil REAL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -312,13 +347,17 @@ class App(tk.Tk):
         win.title("Partei" if not existing else "Partei bearbeiten")
         fields = {}
         labels = ["Name", "Einheit/Wohnung (z.B. 'EG links')", "Wohnfläche m²", "Personenzahl",
-                  "Einzug (JJJJ-MM-TT)", "Auszug (JJJJ-MM-TT, optional)", "Vorauszahlung €/Monat"]
-        keys = ["name", "einheit", "wohnflaeche", "personenzahl", "einzug", "auszug", "vorauszahlung_monat"]
+                  "Miteigentumsanteil (z.B. 12,5 % oder 125/1000)", "Einzug (JJJJ-MM-TT)",
+                  "Auszug (JJJJ-MM-TT, optional)", "Vorauszahlung €/Monat"]
+        keys = ["name", "einheit", "wohnflaeche", "personenzahl", "miteigentumsanteil", "einzug",
+                "auszug", "vorauszahlung_monat"]
         for i, (lbl, key) in enumerate(zip(labels, keys)):
             ttk.Label(win, text=lbl).grid(row=i, column=0, sticky="w", padx=6, pady=3)
             e = ttk.Entry(win, width=30)
             if existing:
                 val = existing[key]
+                if key == "miteigentumsanteil" and val is not None:
+                    val = f"{val * 100:g}%"
                 e.insert(0, "" if val is None else str(val))
             e.grid(row=i, column=1, padx=6, pady=3)
             fields[key] = e
@@ -335,6 +374,13 @@ class App(tk.Tk):
         self.wait_window(win)
         return result if result else None
 
+    def _parse_miteigentumsanteil(self, value):
+        try:
+            return parse_anteil(value)
+        except ValueError as error:
+            messagebox.showerror("Fehler", f"Ungültiger Miteigentumsanteil: {error}")
+            return None
+
     def add_partei(self):
         iid = self.current_immobilie_id()
         if not iid:
@@ -343,13 +389,17 @@ class App(tk.Tk):
         data = self._partei_dialog()
         if not data or not data.get("name"):
             return
+        miteigentumsanteil = self._parse_miteigentumsanteil(data["miteigentumsanteil"])
+        if miteigentumsanteil is None:
+            return
         conn = get_conn()
         conn.execute("""INSERT INTO parteien
-            (immobilie_id, name, einheit, wohnflaeche, personenzahl, einzug, auszug, vorauszahlung_monat)
-            VALUES (?,?,?,?,?,?,?,?)""",
+            (immobilie_id, name, einheit, wohnflaeche, personenzahl, miteigentumsanteil, einzug, auszug,
+             vorauszahlung_monat)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
             (iid, data["name"], data["einheit"], float(data["wohnflaeche"] or 0),
-             int(data["personenzahl"] or 1), data["einzug"], data["auszug"] or None,
-             float(data["vorauszahlung_monat"] or 0)))
+             int(data["personenzahl"] or 1), miteigentumsanteil,
+             data["einzug"], data["auszug"] or None, float(data["vorauszahlung_monat"] or 0)))
         conn.commit()
         conn.close()
         self.refresh_parteien()
@@ -365,11 +415,15 @@ class App(tk.Tk):
         if not data:
             conn.close()
             return
+        miteigentumsanteil = self._parse_miteigentumsanteil(data["miteigentumsanteil"])
+        if miteigentumsanteil is None:
+            conn.close()
+            return
         conn.execute("""UPDATE parteien SET name=?, einheit=?, wohnflaeche=?, personenzahl=?,
-            einzug=?, auszug=?, vorauszahlung_monat=? WHERE id=?""",
+            miteigentumsanteil=?, einzug=?, auszug=?, vorauszahlung_monat=? WHERE id=?""",
             (data["name"], data["einheit"], float(data["wohnflaeche"] or 0),
-             int(data["personenzahl"] or 1), data["einzug"], data["auszug"] or None,
-             float(data["vorauszahlung_monat"] or 0), pid))
+             int(data["personenzahl"] or 1), miteigentumsanteil,
+             data["einzug"], data["auszug"] or None, float(data["vorauszahlung_monat"] or 0), pid))
         conn.commit()
         conn.close()
         self.refresh_parteien()
@@ -659,6 +713,79 @@ class App(tk.Tk):
         self.wait_window(win)
         return result if result else None
 
+    def _individual_anteile_dialog(self, immobilie_id, kostenposition_id=None):
+        conn = get_conn()
+        parteien = conn.execute(
+            "SELECT id, name, einheit FROM parteien WHERE immobilie_id=? ORDER BY name", (immobilie_id,)
+        ).fetchall()
+        existing = {}
+        if kostenposition_id is not None:
+            existing = {
+                row["partei_id"]: row["anteil"]
+                for row in conn.execute(
+                    "SELECT partei_id, anteil FROM kostenanteile WHERE kostenposition_id=?",
+                    (kostenposition_id,)
+                )
+            }
+        conn.close()
+        if not parteien:
+            messagebox.showerror("Fehler", "Für einen individuellen Umlageschlüssel muss mindestens eine Partei angelegt sein.")
+            return None
+
+        win = tk.Toplevel(self)
+        win.title("Individuelle Anteile")
+        ttk.Label(
+            win,
+            text="Anteile als Prozent (z.B. 12,5 %) oder Verhältnis (z.B. 125/1000) eingeben. Summe: 100 %.",
+            wraplength=480
+        ).grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="w")
+
+        fields = {}
+        for row, partei in enumerate(parteien, start=1):
+            label = partei["name"]
+            if partei["einheit"]:
+                label += f" ({partei['einheit']})"
+            ttk.Label(win, text=label).grid(row=row, column=0, padx=8, pady=3, sticky="w")
+            entry = ttk.Entry(win, width=20)
+            if partei["id"] in existing:
+                entry.insert(0, f"{existing[partei['id']] * 100:g}%")
+            entry.grid(row=row, column=1, padx=8, pady=3, sticky="ew")
+            fields[partei["id"]] = entry
+
+        result = {}
+
+        def save():
+            try:
+                anteile = {partei_id: parse_anteil(entry.get()) for partei_id, entry in fields.items()}
+            except ValueError as error:
+                messagebox.showerror("Fehler", f"Ungültiger individueller Anteil: {error}")
+                return
+            if abs(sum(anteile.values()) - 1) > 0.0001:
+                messagebox.showerror("Fehler", "Die individuellen Anteile müssen zusammen 100 % ergeben.")
+                return
+            result.update(anteile)
+            win.destroy()
+
+        buttons = ttk.Frame(win)
+        buttons.grid(row=len(parteien) + 1, column=0, columnspan=2, padx=8, pady=8, sticky="e")
+        ttk.Button(buttons, text="Abbrechen", command=win.destroy).pack(side="right")
+        ttk.Button(buttons, text="Speichern", command=save).pack(side="right", padx=(0, 6))
+        win.grab_set()
+        self.wait_window(win)
+        return result if result else None
+
+    @staticmethod
+    def _ist_individueller_schluessel(schluessel):
+        return schluessel in ("Individuell (%)", "Individuell (%, Verhältnis)")
+
+    @staticmethod
+    def _speichere_individuelle_anteile(conn, kostenposition_id, anteile):
+        conn.execute("DELETE FROM kostenanteile WHERE kostenposition_id=?", (kostenposition_id,))
+        conn.executemany(
+            "INSERT INTO kostenanteile (kostenposition_id, partei_id, anteil) VALUES (?,?,?)",
+            [(kostenposition_id, partei_id, anteil) for partei_id, anteil in anteile.items()]
+        )
+
     def add_kosten(self):
         iid = self.current_immobilie_id()
         if not iid:
@@ -672,10 +799,18 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror("Fehler", "Ungültiger Betrag.")
             return
+        anteile = None
+        if self._ist_individueller_schluessel(data["umlageschluessel"]):
+            anteile = self._individual_anteile_dialog(iid)
+            if anteile is None:
+                return
         jahr = int(self.jahr_kosten.get())
         conn = get_conn()
-        conn.execute("""INSERT INTO kostenpositionen (immobilie_id, jahr, kostenart, betrag, umlageschluessel)
-                        VALUES (?,?,?,?,?)""", (iid, jahr, data["kostenart"], betrag, data["umlageschluessel"]))
+        cursor = conn.execute("""INSERT INTO kostenpositionen
+            (immobilie_id, jahr, kostenart, betrag, umlageschluessel) VALUES (?,?,?,?,?)""",
+            (iid, jahr, data["kostenart"], betrag, data["umlageschluessel"]))
+        if anteile is not None:
+            self._speichere_individuelle_anteile(conn, cursor.lastrowid, anteile)
         conn.commit()
         conn.close()
         self.refresh_kosten()
@@ -697,8 +832,20 @@ class App(tk.Tk):
             messagebox.showerror("Fehler", "Ungültiger Betrag.")
             conn.close()
             return
+        anteile = None
+        if self._ist_individueller_schluessel(data["umlageschluessel"]):
+            anteile = self._individual_anteile_dialog(
+                immobilie_id=self.current_immobilie_id(), kostenposition_id=kid
+            )
+            if anteile is None:
+                conn.close()
+                return
         conn.execute("UPDATE kostenpositionen SET kostenart=?, betrag=?, umlageschluessel=? WHERE id=?",
                      (data["kostenart"], betrag, data["umlageschluessel"], kid))
+        if anteile is not None:
+            self._speichere_individuelle_anteile(conn, kid, anteile)
+        else:
+            conn.execute("DELETE FROM kostenanteile WHERE kostenposition_id=?", (kid,))
         conn.commit()
         conn.close()
         self.refresh_kosten()
@@ -780,6 +927,7 @@ class App(tk.Tk):
         gesamt_flaeche = sum(p["wohnflaeche"] or 0 for p in alle_parteien) or (immo["gesamtwohnflaeche"] or 1)
         gesamt_personen = sum(p["personenzahl"] or 0 for p in alle_parteien) or 1
         gesamt_einheiten = len(alle_parteien) or (immo["gesamteinheiten"] or 1)
+        gesamt_miteigentumsanteile = sum(p["miteigentumsanteil"] or 0 for p in alle_parteien)
 
         zeilen = []
         summe_anteil = 0.0
@@ -794,15 +942,31 @@ class App(tk.Tk):
             elif schl == "Wohneinheiten":
                 anteil = k["betrag"] / gesamt_einheiten if gesamt_einheiten else 0
                 basis_text = f"1 von {gesamt_einheiten} Einheiten"
+            elif schl == "Miteigentumsanteil":
+                miteigentumsanteil = partei["miteigentumsanteil"] or 0
+                anteil = k["betrag"] * (miteigentumsanteil / gesamt_miteigentumsanteile) if gesamt_miteigentumsanteile else 0
+                basis_text = (
+                    f"{miteigentumsanteil * 100:.4g} % von "
+                    f"{gesamt_miteigentumsanteile * 100:.4g} % MEA"
+                )
             elif schl == "Verbrauch (Zähler)":
                 verbrauch_partei, verbrauch_gesamt = self._verbrauch_fuer(conn, immobilie_id, partei_id, jahr)
                 anteil = k["betrag"] * (verbrauch_partei / verbrauch_gesamt) if verbrauch_gesamt else 0
                 basis_text = f"{verbrauch_partei:.2f} von {verbrauch_gesamt:.2f} Einheiten (Verbrauch)"
+            elif self._ist_individueller_schluessel(schl):
+                row = conn.execute(
+                    "SELECT anteil FROM kostenanteile WHERE kostenposition_id=? AND partei_id=?",
+                    (k["id"], partei_id)
+                ).fetchone()
+                individueller_anteil = row["anteil"] if row else 0
+                anteil = k["betrag"] * individueller_anteil
+                basis_text = f"{individueller_anteil * 100:.4g} % individuell"
             else:
                 anteil = 0
-                basis_text = "individuell (bitte manuell prüfen)"
+                basis_text = "unbekannter Umlageschlüssel"
             summe_anteil += anteil
-            zeilen.append((k["kostenart"], k["betrag"], schl, basis_text, anteil))
+            anzeige_schl = "Individuell" if self._ist_individueller_schluessel(schl) else schl
+            zeilen.append((k["kostenart"], k["betrag"], anzeige_schl, basis_text, anteil))
 
         # Zählerdaten für Anlage
         zaehler_rows = conn.execute("""
@@ -845,8 +1009,11 @@ class App(tk.Tk):
         elements.append(Paragraph(f"Abrechnungszeitraum: 01.01.{jahr} – 31.12.{jahr}", style_normal))
         elements.append(Paragraph(f"Objekt: {immo['name']}, {immo['adresse'] or ''}", style_normal))
         elements.append(Paragraph(f"Mietpartei: {partei['name']} ({partei['einheit'] or '-'})", style_normal))
-        elements.append(Paragraph(f"Wohnfläche: {partei['wohnflaeche'] or 0} m² · Personen: {partei['personenzahl'] or 0}",
-                                   style_normal))
+        elements.append(Paragraph(
+            f"Wohnfläche: {partei['wohnflaeche'] or 0} m² · Personen: {partei['personenzahl'] or 0} · "
+            f"Miteigentumsanteil: {(partei['miteigentumsanteil'] or 0) * 100:.4g} %",
+            style_normal
+        ))
         elements.append(Spacer(1, 6*mm))
         elements.append(HRFlowable(width="100%", color=colors.grey))
         elements.append(Spacer(1, 4*mm))
